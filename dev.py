@@ -1,211 +1,93 @@
 import os
-import re
 import subprocess
 import sys
-import traceback
-from inspect import getfullargspec
-from io import StringIO
-from time import time
+from contextlib import suppress
+from time import sleep
 
-from pyrogram import filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telegram import TelegramError, Update
+from telegram.error import Unauthorized
+from telegram.ext import CallbackContext, CommandHandler
 
-from src import app
-from config import SUDOERS
-
-
-async def aexec(code, client, message):
-    exec(
-        "async def __aexec(client, message): "
-        + "".join(f"\n {a}" for a in code.split("\n"))
-    )
-    return await locals()["__aexec"](client, message)
+import FallenRobot
+from FallenRobot import dispatcher
+from FallenRobot.modules.helper_funcs.chat_status import dev_plus
 
 
-async def edit_or_reply(msg: Message, **kwargs):
-    func = msg.edit_text if msg.from_user.is_self else msg.reply
-    spec = getfullargspec(func.__wrapped__).args
-    await func(**{k: v for k, v in kwargs.items() if k in spec})
-
-
-@app.on_edited_message(
-    filters.command("e")
-    & filters.user(SUDOERS)
-    & ~filters.forwarded
-    & ~filters.via_bot
-)
-@app.on_message(
-    filters.command("e")
-    & filters.user(SUDOERS)
-    & ~filters.forwarded
-    & ~filters.via_bot
-)
-async def executor(client: app, message: Message):
-    if len(message.command) < 2:
-        return await edit_or_reply(message, text="<b>ᴡʜᴀᴛ ʏᴏᴜ ᴡᴀɴɴᴀ ᴇxᴇᴄᴜᴛᴇ ʙᴀʙʏ ?</b>")
-    try:
-        cmd = message.text.split(" ", maxsplit=1)[1]
-    except IndexError:
-        return await message.delete()
-    t1 = time()
-    old_stderr = sys.stderr
-    old_stdout = sys.stdout
-    redirected_output = sys.stdout = StringIO()
-    redirected_error = sys.stderr = StringIO()
-    stdout, stderr, exc = None, None, None
-    try:
-        await aexec(cmd, client, message)
-    except Exception:
-        exc = traceback.format_exc()
-    stdout = redirected_output.getvalue()
-    stderr = redirected_error.getvalue()
-    sys.stdout = old_stdout
-    sys.stderr = old_stderr
-    evaluation = "\n"
-    if exc:
-        evaluation += exc
-    elif stderr:
-        evaluation += stderr
-    elif stdout:
-        evaluation += stdout
-    else:
-        evaluation += "Success"
-    final_output = f"<b>⥤ ʀᴇsᴜʟᴛ :</b>\n<pre language='python'>{evaluation}</pre>"
-    if len(final_output) > 4096:
-        filename = "output.txt"
-        with open(filename, "w+", encoding="utf8") as out_file:
-            out_file.write(str(evaluation))
-        t2 = time()
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="⏳",
-                        callback_data=f"runtime {t2-t1} Seconds",
-                    )
-                ]
-            ]
-        )
-        await message.reply_document(
-            document=filename,
-            caption=f"<b>⥤ ᴇᴠᴀʟ :</b>\n<code>{cmd[0:980]}</code>\n\n<b>⥤ ʀᴇsᴜʟᴛ :</b>\nAttached Document",
-            quote=False,
-            reply_markup=keyboard,
-        )
-        await message.delete()
-        os.remove(filename)
-    else:
-        t2 = time()
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="⏳",
-                        callback_data=f"runtime {round(t2-t1, 3)} Seconds",
-                    ),
-                    InlineKeyboardButton(
-                        text="🗑",
-                        callback_data=f"forceclose abc|{message.from_user.id}",
-                    ),
-                ]
-            ]
-        )
-        await edit_or_reply(message, text=final_output, reply_markup=keyboard)
-
-
-@app.on_callback_query(filters.regex(r"runtime"))
-async def runtime_func_cq(_, cq):
-    runtime = cq.data.split(None, 1)[1]
-    await cq.answer(runtime, show_alert=True)
-
-
-@app.on_callback_query(filters.regex("forceclose"))
-async def forceclose_command(_, CallbackQuery):
-    callback_data = CallbackQuery.data.strip()
-    callback_request = callback_data.split(None, 1)[1]
-    query, user_id = callback_request.split("|")
-    if CallbackQuery.from_user.id != int(user_id):
-        try:
-            return await CallbackQuery.answer(
-                "» ɪᴛ'ʟʟ ʙᴇ ʙᴇᴛᴛᴇʀ ɪғ ʏᴏᴜ sᴛᴀʏ ɪɴ ʏᴏᴜʀ ʟɪᴍɪᴛs ʙᴀʙʏ.", show_alert=True
-            )
-        except:
-            return
-    await CallbackQuery.message.delete()
-    try:
-        await CallbackQuery.answer()
-    except:
+@dev_plus
+def allow_groups(update: Update, context: CallbackContext):
+    args = context.args
+    if not args:
+        update.effective_message.reply_text(f"Current state: {FallenRobot.ALLOW_CHATS}")
         return
-
-
-@app.on_edited_message(
-    filters.command("sh")
-    & filters.user(SUDOERS)
-    & ~filters.forwarded
-    & ~filters.via_bot
-)
-@app.on_message(
-    filters.command("sh")
-    & filters.user(SUDOERS)
-    & ~filters.forwarded
-    & ~filters.via_bot
-)
-async def shellrunner(_, message: Message):
-    if len(message.command) < 2:
-        return await edit_or_reply(message, text="<b>ᴇxᴀᴍᴩʟᴇ :</b>\n/sh git pull")
-    text = message.text.split(None, 1)[1]
-    if "\n" in text:
-        code = text.split("\n")
-        output = ""
-        for x in code:
-            shell = re.split(""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", x)
-            try:
-                process = subprocess.Popen(
-                    shell,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-            except Exception as err:
-                await edit_or_reply(message, text=f"<b>ERROR :</b>\n<pre>{err}</pre>")
-            output += f"<b>{code}</b>\n"
-            output += process.stdout.read()[:-1].decode("utf-8")
-            output += "\n"
+    if args[0].lower() in ["off", "no"]:
+        FallenRobot.ALLOW_CHATS = True
+    elif args[0].lower() in ["yes", "on"]:
+        FallenRobot.ALLOW_CHATS = False
     else:
-        shell = re.split(""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", text)
-        for a in range(len(shell)):
-            shell[a] = shell[a].replace('"', "")
+        update.effective_message.reply_text("Format: /lockdown Yes/No or Off/On")
+        return
+    update.effective_message.reply_text("Done! Lockdown value toggled.")
+
+
+@dev_plus
+def leave(update: Update, context: CallbackContext):
+    bot = context.bot
+    args = context.args
+    if args:
+        chat_id = str(args[0])
         try:
-            process = subprocess.Popen(
-                shell,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+            bot.leave_chat(int(chat_id))
+        except TelegramError:
+            update.effective_message.reply_text(
+                "Beep boop, I could not leave that group(dunno why tho)."
             )
-        except Exception as err:
-            print(err)
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errors = traceback.format_exception(
-                etype=exc_type,
-                value=exc_obj,
-                tb=exc_tb,
-            )
-            return await edit_or_reply(
-                message, text=f"<b>ERROR :</b>\n<pre>{''.join(errors)}</pre>"
-            )
-        output = process.stdout.read()[:-1].decode("utf-8")
-    if str(output) == "\n":
-        output = None
-    if output:
-        if len(output) > 4096:
-            with open("output.txt", "w+") as file:
-                file.write(output)
-            await app.send_document(
-                message.chat.id,
-                "output.txt",
-                reply_to_message_id=message.id,
-                caption="<code>Output</code>",
-            )
-            return os.remove("output.txt")
-        await edit_or_reply(message, text=f"<b>OUTPUT :</b>\n<pre>{output}</pre>")
+            return
+        with suppress(Unauthorized):
+            update.effective_message.reply_text("Beep boop, I left that soup!.")
     else:
-        await edit_or_reply(message, text="<b>OUTPUT :</b>\n<code>None</code>")
-    await message.stop_propagation()
+        update.effective_message.reply_text("Send a valid chat ID")
+
+
+@dev_plus
+def gitpull(update: Update, context: CallbackContext):
+    sent_msg = update.effective_message.reply_text(
+        "Pulling all changes from remote and then attempting to restart."
+    )
+    subprocess.Popen("git pull", stdout=subprocess.PIPE, shell=True)
+
+    sent_msg_text = sent_msg.text + "\n\nChanges pulled...I guess.. Restarting in "
+
+    for i in reversed(range(5)):
+        sent_msg.edit_text(sent_msg_text + str(i + 1))
+        sleep(1)
+
+    sent_msg.edit_text("Restarted.")
+
+    os.system("restart.bat")
+    os.execv("start.bat", sys.argv)
+
+
+@dev_plus
+def restart(update: Update, context: CallbackContext):
+    update.effective_message.reply_text(
+        "Starting a new instance and shutting down this one"
+    )
+
+    os.system("restart.bat")
+    os.execv("start.bat", sys.argv)
+
+
+LEAVE_HANDLER = CommandHandler("leave", leave, run_async=True)
+GITPULL_HANDLER = CommandHandler("gitpull", gitpull, run_async=True)
+RESTART_HANDLER = CommandHandler("reboot", restart, run_async=True)
+ALLOWGROUPS_HANDLER = CommandHandler("lockdown", allow_groups, run_async=True)
+
+
+dispatcher.add_handler(ALLOWGROUPS_HANDLER)
+dispatcher.add_handler(LEAVE_HANDLER)
+dispatcher.add_handler(GITPULL_HANDLER)
+dispatcher.add_handler(RESTART_HANDLER)
+
+__mod_name__ = "Dᴇᴠ"
+
+__handlers__ = [LEAVE_HANDLER, GITPULL_HANDLER, RESTART_HANDLER, ALLOWGROUPS_HANDLER]
